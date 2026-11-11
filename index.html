@@ -28,17 +28,11 @@ button{font:inherit;font-weight:800;color:inherit;border:1px solid #546457;backg
 button:focus-visible{outline:2px solid #e0fb9c;outline-offset:2px}
 .primary,button[aria-pressed=true],.held{background:#d2fb73;color:#19251d;border-color:#d2fb73}
 .primary{padding:9px 22px}
-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 14px;touch-action:none}
-.modes{display:flex;flex-direction:column;gap:4px}
-.modes button{font-size:11px;padding:5px 8px;text-align:left}
-.pad{display:grid;grid-template-columns:repeat(3,clamp(36px,12vw,52px));grid-template-rows:repeat(2,clamp(29px,5.5dvh,42px));gap:4px;touch-action:none}
-.pad button{font-size:19px}
-[data-key=up]{grid-column:2}[data-key=left]{grid-column:1}
+footer{display:flex;align-items:center;justify-content:center;padding:7px 14px;touch-action:none}
 .stick{position:relative;width:clamp(102px,32vw,155px);height:clamp(61px,11dvh,88px);border-radius:50%;background:#141e18;border:1px solid #62785f;touch-action:none}
 .stick::before{content:'↑    ↓';position:absolute;inset:0;display:grid;place-items:center;color:#819480;letter-spacing:2em;text-indent:2em;white-space:pre}
 .knob{position:absolute;width:42px;height:42px;left:50%;top:50%;margin:-21px;border-radius:50%;background:#b4e562;border:3px solid #d6f694;box-shadow:0 3px 8px #0008;pointer-events:none}
-.hint{font-size:10px;color:#c1cec0;text-align:right;line-height:1.55}
-@media(max-width:340px){header{gap:6px 10px}.hint{display:none}}
+@media(max-width:340px){header{gap:6px 10px}}
 </style>
 </head>
 <body>
@@ -58,18 +52,7 @@ footer{display:flex;align-items:center;justify-content:space-between;gap:10px;pa
 </div></div>
 </section>
 <footer>
-<div class="modes" aria-label="タッチ操作方式">
-<button id="buttonsMode" aria-pressed="true">方向ボタン</button>
-<button id="stickMode" aria-pressed="false">スティック</button>
-</div>
-<div class="pad" id="pad">
-<button data-key="up" aria-label="アクセル">↑</button>
-<button data-key="left" aria-label="左">←</button>
-<button data-key="down" aria-label="ブレーキ">↓</button>
-<button data-key="right" aria-label="右">→</button>
-</div>
-<div class="stick" id="stick" aria-label="仮想スティック" hidden><span class="knob" id="knob"></span></div>
-<div class="hint">↑ アクセル<br>↓ ブレーキ</div>
+<div class="stick" id="stick" aria-label="仮想スティック。上で加速、下でブレーキ、左右で操縦"><span class="knob" id="knob"></span></div>
 </footer>
 </main>
 <script>
@@ -90,13 +73,60 @@ let x=200, vx=0, tilt=0, rivals=[], crash, state='ready', last=0, stickId=null;
 let best=0;
 try {best=Number(localStorage.getItem('mini-race-best'))||0;} catch {}
 const py = () => H*.45;
-const keys=new Set(), pointers=new Map(), joystick={x:0,y:0};
+const keys=new Set(), joystick={x:0,y:0};
 const keyMap={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right'};
-const pad=get('pad'), stick=get('stick'), knob=get('knob');
+const stick=get('stick'), knob=get('knob');
+let audioCtx, masterGain, engineOsc, engineGain, brakeNoise, brakeGain;
+function initAudio(){
+  if(audioCtx){audioCtx.resume();return;}
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC)return;
+  audioCtx=new AC();
+  masterGain=audioCtx.createGain();masterGain.gain.value=.45;masterGain.connect(audioCtx.destination);
+  engineOsc=audioCtx.createOscillator();engineOsc.type='sawtooth';
+  const engineFilter=audioCtx.createBiquadFilter();engineFilter.type='lowpass';engineFilter.frequency.value=520;
+  engineGain=audioCtx.createGain();engineGain.gain.value=.0001;
+  engineOsc.connect(engineFilter).connect(engineGain).connect(masterGain);engineOsc.start();
+  const buffer=audioCtx.createBuffer(1,audioCtx.sampleRate*2,audioCtx.sampleRate),data=buffer.getChannelData(0);
+  for(let i=0;i<data.length;i++)data[i]=Math.random()*2-1;
+  brakeNoise=audioCtx.createBufferSource();brakeNoise.buffer=buffer;brakeNoise.loop=true;
+  const brakeFilter=audioCtx.createBiquadFilter();brakeFilter.type='bandpass';brakeFilter.frequency.value=1150;brakeFilter.Q.value=1.8;
+  brakeGain=audioCtx.createGain();brakeGain.gain.value=.0001;
+  brakeNoise.connect(brakeFilter).connect(brakeGain).connect(masterGain);brakeNoise.start();
+}
+function tone(from,to,duration,type='sawtooth',volume=.16){
+  if(!audioCtx)return;
+  const now=audioCtx.currentTime,osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
+  osc.type=type;osc.frequency.setValueAtTime(from,now);osc.frequency.exponentialRampToValueAtTime(Math.max(1,to),now+duration);
+  gain.gain.setValueAtTime(.0001,now);gain.gain.exponentialRampToValueAtTime(volume,now+.025);
+  gain.gain.exponentialRampToValueAtTime(.0001,now+duration);
+  osc.connect(gain).connect(masterGain);osc.start(now);osc.stop(now+duration+.03);
+}
+function soundStart(){
+  initAudio();
+  if(!audioCtx)return;
+  tone(72,145,.55,'sawtooth',.2);
+  setTimeout(()=>tone(110,190,.38,'square',.08),150);
+}
+function soundCrash(){
+  if(!audioCtx)return;
+  tone(150,38,.65,'sawtooth',.35);
+  const now=audioCtx.currentTime,buffer=audioCtx.createBuffer(1,audioCtx.sampleRate*.55,audioCtx.sampleRate),data=buffer.getChannelData(0);
+  for(let i=0;i<data.length;i++)data[i]=(Math.random()*2-1)*(1-i/data.length);
+  const src=audioCtx.createBufferSource(),filter=audioCtx.createBiquadFilter(),gain=audioCtx.createGain();
+  src.buffer=buffer;filter.type='lowpass';filter.frequency.value=900;gain.gain.value=.55;
+  src.connect(filter).connect(gain).connect(masterGain);src.start(now);
+}
+function vehicleSound(throttle,brake){
+  if(!audioCtx||!engineGain)return;
+  const now=audioCtx.currentTime;
+  engineOsc.frequency.setTargetAtTime(48+speed*1.55+(throttle?55:0),now,.055);
+  engineGain.gain.setTargetAtTime(state==='race'?(.025+speed/200*.055+throttle*.085):.0001,now,.08);
+  brakeGain.gain.setTargetAtTime(state==='race'?brake*(.035+speed/200*.15):.0001,now,.035);
+}
 function clearInput(){
-  keys.clear(); pointers.clear(); stickId=null;
+  keys.clear();stickId=null;
   joystick.x=joystick.y=0; knob.style.transform='';
-  pad.querySelectorAll('button').forEach(b=>b.classList.remove('held'));
 }
 window.addEventListener('blur',clearInput);
 document.addEventListener('visibilitychange',()=>{clearInput();last=0;});
@@ -107,26 +137,6 @@ window.addEventListener('keydown',e=>{
   if(state==='race')keys.add(keyMap[e.key]);
 });
 window.addEventListener('keyup',e=>keys.delete(keyMap[e.key]));
-function setMode(useStick){
-  clearInput();pad.hidden=useStick;stick.hidden=!useStick;
-  get('buttonsMode').setAttribute('aria-pressed',String(!useStick));
-  get('stickMode').setAttribute('aria-pressed',String(useStick));
-}
-get('buttonsMode').onclick=()=>setMode(false);
-get('stickMode').onclick=()=>setMode(true);
-function padInput(e){
-  const key=document.elementFromPoint(e.clientX,e.clientY)?.closest('[data-key]')?.dataset.key;
-  if(key)pointers.set(e.pointerId,key);else pointers.delete(e.pointerId);
-  pad.querySelectorAll('button').forEach(b=>b.classList.toggle('held',[...pointers.values()].includes(b.dataset.key)));
-}
-pad.addEventListener('pointerdown',e=>{e.preventDefault();pad.setPointerCapture(e.pointerId);padInput(e);});
-pad.addEventListener('pointermove',e=>{if(pad.hasPointerCapture(e.pointerId))padInput(e);});
-for(const event of ['pointerup','pointercancel','lostpointercapture']){
-  pad.addEventListener(event,e=>{
-    pointers.delete(e.pointerId);
-    pad.querySelectorAll('button').forEach(b=>b.classList.toggle('held',[...pointers.values()].includes(b.dataset.key)));
-  });
-}
 function moveStick(e){
   const r=stick.getBoundingClientRect();
   const dx=(e.clientX-r.left-r.width/2)/(r.width*.35);
@@ -157,7 +167,7 @@ function reset(){
   }));
 }
 function start(){
-  reset();clearInput();state='race';get('overlay').hidden=true;get('start').blur();
+  soundStart();reset();clearInput();state='race';get('overlay').hidden=true;get('start').blur();
 }
 get('start').onclick=start;
 function respawn(car){
@@ -208,12 +218,13 @@ function impact(car){
   const force=clamp((speed*.42+Math.abs(speed-car.speed)*.76+Math.abs(vx-car.vx)*.17)/120,.17,1);
   crash={time:0,x,dir:direction,tilt,force,speed,
     dy:side?8:(dy<0?22:-18),kind:side?'側面':dy<0?'正面':'後方',marks:[]};
-  state='crash';clearInput();
+  state='crash';clearInput();soundCrash();vehicleSound(0,0);
   best=Math.max(best,Math.floor(distance));
   try {localStorage.setItem('mini-race-best',String(best));} catch {}
 }
 function step(dt){
   if(state==='crash'){
+    vehicleSound(0,0);
     crash.time+=dt;
     const t=clamp(crash.time/2.55,0,1);
     speed=crash.speed*(1-t)**3;flow+=speed/3.6*7*dt;
@@ -227,10 +238,11 @@ function step(dt){
     return;
   }
   if(state!=='race')return;
-  const pressed=k=>keys.has(k)||[...pointers.values()].includes(k);
+  const pressed=k=>keys.has(k);
   const steer=clamp(Number(pressed('right'))-Number(pressed('left'))+joystick.x,-1,1);
   const throttle=clamp(Number(pressed('up'))+Math.max(0,joystick.y),0,1);
   const brake=clamp(Number(pressed('down'))+Math.max(0,-joystick.y),0,1);
+  vehicleSound(throttle,brake);
   const target=brake>0?-95*brake:mix(-6,51-speed*.13,throttle);
   acceleration=mix(acceleration,target,ease(brake>0?10:5,dt));
   const previous=speed;
@@ -302,10 +314,11 @@ function scenery(kind,n){
 }
 function landscape(){
   ctx.fillStyle='#98ba66';ctx.fillRect(0,0,W,H);
+  const roadsideRush=1+clamp(speed/200,0,1)*.85;
   for(const side of [-1,1]){
     const far=200+side*168;
     for(let i=-1;i<H/106+2;i++){
-      const offset=flow*.72;
+      const offset=flow*.72*roadsideRush;
       const n=i-Math.floor(offset/106),y=i*106+wrap(offset,106);
       const zone=hash(Math.floor(n/5)+side*81);
       box(side<0?0:321,y-1,79,107,0,zone<.38?'#8eaf5f':zone<.75?'#a0bb6c':'#a9c479');
@@ -314,7 +327,7 @@ function landscape(){
       ctx.save();ctx.translate(far+(hash(n+side*37)-.5)*12,y+53);scenery(kind,n);ctx.restore();
     }
     for(let i=-1;i<H/59+1;i++){
-      const offset=flow*.94;
+      const offset=flow*.94*roadsideRush;
       const n=i-Math.floor(offset/59)+side*130;
       const r=hash(n), y=i*59+wrap(offset,59);
       ctx.save();ctx.translate(200+side*(120+hash(n*8)*6),y);
